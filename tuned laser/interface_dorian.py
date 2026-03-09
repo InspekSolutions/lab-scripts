@@ -404,7 +404,7 @@ class MyScene(QWidget, QGraphicsScene):
         now.year, now.month, now.day, now.hour, now.minute,
         now.second) + ".txt", 'w')
         np_spectrum = np.c_[M, reading]
-        np.savetxt(file, np_spectrum, fmt=['%.1f','%.10e'])
+        np.savetxt(file, np_spectrum, fmt=['%.4f','%.10e'])
         file.close()
 
 
