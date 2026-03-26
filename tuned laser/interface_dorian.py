@@ -20,7 +20,7 @@ import os
 import time
 
 # DLL pour le powermeter
-Powermeter = PW_1936r(LIBNAME=r'C:\Users\PC_labo_2\OneDrive - InSpek\Documents\Software\Labo optique\Interface_python_ordi_Dorian\interface_dorian\usbdll.dll', product_id=0xCEC7)
+Powermeter = PW_1936r(LIBNAME=os.path.join(os.path.dirname(__file__), 'usbdll.dll'), product_id=0xCEC7)
 
 
 try :
