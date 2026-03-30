@@ -14,13 +14,39 @@ from tkinter import filedialog
 from datetime import *
 import threading
 import random
-from Powermeter import PW_1936r
+from pm_control import create_powermeter
 import numpy as np
 import os
 import time
 
-# DLL pour le powermeter
-Powermeter = PW_1936r(LIBNAME=os.path.join(os.path.dirname(__file__), 'usbdll.dll'), product_id=0xCEC7)
+# Powermeter setup:
+# - PM_TYPE=newport  -> Newport 1936-R via usbdll.dll
+# - PM_TYPE=thorlabs -> Thorlabs via VISA/SCPI
+POWERMETER = None
+LOCAL_NEWPORT_DLL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "usbdll.dll")
+
+
+def connect_powermeter():
+    global POWERMETER
+    try:
+        POWERMETER = create_powermeter(
+            pm_type=os.environ.get("PM_TYPE", "newport"),
+            newport_libname=os.environ.get(
+                "NEWPORT_DLL_PATH",
+                LOCAL_NEWPORT_DLL,
+            ),
+            thorlabs_resource=os.environ.get("THORLABS_VISA_RESOURCE", ""),
+        )
+        POWERMETER.set_auto_range(True)
+        return True, ""
+    except Exception as pm_error:
+        POWERMETER = None
+        return False, str(pm_error)
+
+
+ok_pm, pm_message = connect_powermeter()
+if not ok_pm:
+    print(f"Powermeter connection failed: {pm_message}")
 
 
 try :
@@ -29,11 +55,6 @@ try :
     TECpak586.set_output(0)
 except:
     TECpak586 = None
-try:
-    Powermeter.write('PM:AUTO 1')
-except :
-    pass
-
 class Worker_signal(QObject):
     finished = pyqtSignal(list)
     progress = pyqtSignal(int)
@@ -73,6 +94,9 @@ class Worker(QThread):
 
     def run(self):
         L= []
+        if POWERMETER is None:
+            self.signal.finished.emit(L)
+            return
         mini = self.min
         maxi = self.max + self.step
         stepp = self.step
@@ -84,13 +108,13 @@ class Worker(QThread):
             elif self.choice == "TEC":
                 TECpak586.set_temp(self.min+k*self.step)
                 sleep(self.Time)
-                L.append(float(Powermeter.ask("PM:Power?").decode('UTF-8')))
+                L.append(float(POWERMETER.read_power()))
             else:
                 output = self.min + k * self.step
                 print(output)
                 TECpak586.set_las(output)
                 sleep(self.Time)
-                L.append(float(Powermeter.ask("PM:Power?").decode('UTF-8')))
+                L.append(float(POWERMETER.read_power()))
             self.signal.progress.emit(k)
         self.signal.finished.emit(L)
         print('PASS')
@@ -132,7 +156,8 @@ class MyWindow(QMainWindow, QWidget):
             TECpak586.set_output(0)
             TECpak586.set_output_las(0)
             TECpak586.close()
-            Powermeter.close_device()
+            if POWERMETER is not None:
+                POWERMETER.close()
             event.accept()
         else:
             event.ignore()
@@ -241,13 +266,19 @@ class MyScene(QWidget, QGraphicsScene):
         self.mywidgetspectro2.Range.currentIndexChanged.connect(self.Change_Range)
 
     def Change_Range(self,value):
+        if POWERMETER is None:
+            return
         if value != 0:
             if self.Auto == "ON":
-                Powermeter.write('PM:AUTO 0')
+                POWERMETER.set_auto_range(False)
                 self.Auto = "OFF"
-            Powermeter.write("PM:RAN " + str(value-1))
+            try:
+                POWERMETER.set_range(value - 1)
+            except NotImplementedError:
+                # Some PMs only support auto-range in this UI.
+                pass
         else:
-            Powermeter.write('PM:AUTO 1')
+            POWERMETER.set_auto_range(True)
             self.Auto = "ON"
 
     def connect_arroyo(self,TECpak586):
@@ -285,6 +316,8 @@ class MyScene(QWidget, QGraphicsScene):
 
     def Run(self):
         if self.launched == "OFF":
+            if not self.ensure_powermeter_connected():
+                return
             if self.mywidgetspectro2.radiobutton.isChecked():
                 styles = {'font-size': '15px'}
                 self.mywidgetplot.p6.setLabel('bottom', 'Temperature (C°)', **styles)
@@ -325,6 +358,41 @@ class MyScene(QWidget, QGraphicsScene):
             self.Quit()
             self.mywidgetspectro2.launch_plotting.setIcon(QIcon('led-red-on.png'))
             self.launched = "OFF"
+
+    def ensure_powermeter_connected(self):
+        global POWERMETER
+        while True:
+            if POWERMETER is not None:
+                try:
+                    POWERMETER.read_power()
+                    return True
+                except Exception:
+                    try:
+                        POWERMETER.close()
+                    except Exception:
+                        pass
+                    POWERMETER = None
+
+            retry = QMessageBox.question(
+                self,
+                "Powermeter not connected",
+                "Powermeter is not connected.\n\n"
+                "Reconnect the device and press Yes to retry.\n"
+                "Press No to cancel scan launch.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if retry != QMessageBox.Yes:
+                return False
+
+            ok, error_text = connect_powermeter()
+            if ok:
+                return True
+            QMessageBox.warning(
+                self,
+                "Reconnect failed",
+                f"Could not connect to powermeter:\n{error_text}",
+            )
 
     def Delete_line(self):
         with open(r"Name.txt", 'r') as f:
